@@ -1,0 +1,280 @@
+
+package main
+
+import (
+	"fmt"
+	"github.com/AllenDang/giu/imgui"
+	"github.com/windosx/face-engine/v4/util"
+	"image"
+	"image/color"
+	"log"
+	"strconv"
+	"time"
+
+	. "github.com/windosx/face-engine/v4"
+	"gocv.io/x/gocv"
+	g "github.com/AllenDang/giu"
+)
+
+var (
+	engine *FaceEngine
+	window *gocv.Window
+	media  *gocv.VideoCapture
+	ticker *time.Ticker
+	font1 imgui.Font
+	maxindex int
+	preResult bool
+)
+type Obj struct{
+	name string
+	nums string
+	Image util.ImageInfo
+	FaceInfos MultiFaceInfo
+	FaceInfo SingleFaceInfo
+	result FaceFeature
+}
+var objs []Obj
+func GetFiles(){
+	//获取图片
+	var err error
+	file_engine,err := NewFaceEngine(DetectModeImage,OrientPriority0,1,EnableFaceDetect|EnableAge|EnableGender|EnableFaceRecognition)
+	if err != nil{
+		log.Fatal(err)
+	}
+	path := "C:\\faces\\"
+	format := ".jpg"
+	arr := []int64{1,2}
+	for _,v := range arr{
+		obj := Obj{}
+		obj.name = strconv.FormatInt(v,10) + "号"
+		obj.nums = strconv.FormatInt(v,10)
+		obj.Image = util.GetResizedImageInfo(path + obj.nums + format)
+		obj.FaceInfos, err = file_engine.DetectFaces(obj.Image.Width, obj.Image.Height, ColorFormatBGR24, obj.Image.DataUInt8)
+		if err != nil{
+			fmt.Print(v)
+			log.Fatal("提取信息失败")
+		}
+		if obj.FaceInfos.FaceDataInfoList == nil{
+			fmt.Print(v)
+			log.Fatal("提取信息失败")
+		}
+		obj.FaceInfo.DataInfo = obj.FaceInfos.FaceDataInfoList[0]
+		obj.FaceInfo.FaceOrient = obj.FaceInfos.FaceOrient[0]
+		obj.FaceInfo.FaceOrient = obj.FaceInfos.FaceOrient[0]
+		obj.result,err = file_engine.FaceFeatureExtract(obj.Image.Width,obj.Image.Height,ColorFormatBGR24,obj.Image.DataUInt8,obj.FaceInfo,0,0)
+		objs = append(objs,obj)
+	}
+}
+// 激活SDK
+func init() {
+	err := OnlineActivation("8tM7EeBHZhL1De6wgRs8nJEJkoxy96VSKAMypTSeY7By", "F4V8HBCEYwsm4EU3XifvWU6VbGRhDbmkSAuibdmqTSUv", "8691-116F-H133-TE67")
+	if err != nil {
+		panic(err)
+	}
+}
+func initFont() {
+	fonts := g.Context.IO().Fonts()
+
+	ranges := imgui.NewGlyphRanges()
+
+	builder := imgui.NewFontGlyphRangesBuilder()
+	builder.AddText("铁憨憨你好！")
+	builder.AddRanges(fonts.GlyphRangesChineseFull())
+	builder.BuildRanges(ranges)
+
+	fontPath := "c:/Alibaba-PuHuiTi-Light.ttf"
+	fonts.AddFontFromFileTTFV(fontPath, 16, imgui.DefaultFontConfig, ranges.Data())
+}
+func loop(){
+	g.SingleWindow("确认信息").Layout(
+		g.Label("信息确认"),
+		g.Line(
+			g.Label("员工编号:" + objs[maxindex].nums),
+			g.Label("员工姓名:" + objs[maxindex].name),
+		))
+}
+func refresh(){
+	g.Update()//更新界面
+}
+func test(callback func()){
+	wnd := g.NewMasterWindow("hello world",400,200,g.MasterWindowFlagsNotResizable,initFont)
+	wnd.Run(callback)
+}
+func main() {
+	preResult = false
+	//创建图形化界面
+	var err error
+	// 初始化人脸引擎
+	engine, err = NewFaceEngine(DetectModeVideo,
+		OrientPriority0,
+		1,
+		EnableFaceDetect|EnableAge|EnableGender|EnableFaceRecognition|EnableLiveness)
+	if err != nil {
+		panic(err)
+	}
+	GetFiles()
+	media, err = gocv.VideoCaptureDevice(0)//根据id打开摄像头（我没有内置摄像头，所以是USB，惨惨兮兮）
+	if err != nil {
+		panic(err)
+	}
+	// 整个窗口方便看效果
+	window = gocv.NewWindow("face detect")
+	// 获取视频宽度
+	w := media.Get(gocv.VideoCaptureFrameWidth)
+	// 获取视频高度
+	h := media.Get(gocv.VideoCaptureFrameHeight)
+	// 调整窗口大小
+	window.ResizeWindow(int(w), int(h))
+	for{
+		img := gocv.NewMat()
+		media.Read(&img)
+		if img.Empty() {
+			continue
+		}
+		detectFace(engine, &img)//人脸识别
+		window.IMShow(img)
+		window.WaitKey(30)
+		// 图片处理完毕记得关闭以释放内存
+		img.Close()
+	}
+	// 收尾工作
+	media.Close()
+	engine.Destroy()
+	window.Close()
+}
+
+// 虹软开始干活
+func detectFace(engine *FaceEngine, img *gocv.Mat) bool{
+	dataPtr, err := img.DataPtrUint8()//转换为ImageData所需类型
+	if err != nil {
+		fmt.Printf("%v\n", err)
+		return false
+	}
+	imageData := ImageData{
+		PixelArrayFormat: ColorFormatBGR24,
+		Width:            img.Cols(),
+		Height:           img.Rows(),
+	}
+	imageData.WidthStep[0] = img.Step()
+	imageData.ImageData[0] = dataPtr
+	faceInfo, err := engine.DetectFacesEx(imageData)//预处理
+	if err != nil {
+		fmt.Printf("%v\n", err)
+		return false
+	}
+	if faceInfo.FaceNum > 0 {
+		temp := SingleFaceInfo{
+			FaceOrient: faceInfo.FaceOrient[0],
+			FaceRect: faceInfo.FaceRect[0],
+			DataInfo: faceInfo.FaceDataInfoList[0],
+		}
+		//对比一下
+		temp1,err := engine.FaceFeatureExtractEx(imageData,temp,0,0)
+		if err != nil{
+			fmt.Print(1)
+			log.Fatal(err)
+		}
+		var max float32 = 0.0
+		i := 0
+		for _,v := range objs{
+			level,err := engine.FaceFeatureCompare(temp1,v.result)
+			if err != nil{
+				fmt.Print(2)
+				log.Fatal(err)
+			}
+			if level > max {
+				max = level
+				maxindex = i
+			}
+			i++
+		}
+		err = engine.ProcessEx(imageData, faceInfo, EnableAge|EnableGender|EnableLiveness)
+		for idx := 0; idx < int(faceInfo.FaceNum); idx++ {
+			rect := image.Rect(int(faceInfo.FaceRect[idx].Left),
+				int(faceInfo.FaceRect[idx].Top),
+				int(faceInfo.FaceRect[idx].Right),
+				int(faceInfo.FaceRect[idx].Bottom))
+			// 把人脸框起来
+			gocv.Rectangle(img, rect, color.RGBA{G: 255}, 2)
+			if err == nil {
+				age, _ := engine.GetAge()
+				gender, _ := engine.GetGender()
+				live,_ := engine.GetLivenessScore()
+				var ageResult string
+				var genderResult string
+				if live.IsLive[idx] != 1 {
+					//假体
+					preResult = false
+					showText := "prosthesis"
+					gocv.PutText(img,fmt.Sprintf("%s",showText),
+							image.Pt(int(faceInfo.FaceRect[idx].Right+2), int(faceInfo.FaceRect[idx].Top+10)),
+								gocv.FontHersheyPlain,
+								1,
+								color.RGBA{R: 255},
+								1,
+						)
+					return false
+				}
+				if age.AgeArray[idx] <= 0 {
+					ageResult = "N/A"
+				} else {
+					ageResult = strconv.Itoa(int(age.AgeArray[idx]))
+				}
+				if gender.GenderArray[idx] < 0 {
+					genderResult = "N/A"
+				} else if gender.GenderArray[idx] == 0 {
+					genderResult = "Male"
+				} else {
+					genderResult = "Female"
+				}
+
+				gocv.PutText(img,
+					fmt.Sprintf("Age: %s", ageResult),
+					image.Pt(int(faceInfo.FaceRect[idx].Right+2), int(faceInfo.FaceRect[idx].Top+10)),
+					gocv.FontHersheyPlain,
+					1,
+					color.RGBA{R: 255},
+					1)
+				gocv.PutText(img,
+					fmt.Sprintf("Gender: %s", genderResult),
+					image.Pt(int(faceInfo.FaceRect[idx].Right+2), int(faceInfo.FaceRect[idx].Top+25)),
+					gocv.FontHersheyPlain,
+					1,
+					color.RGBA{R: 255},
+					1)
+				if max > 0.8{
+					//也只有到0.8以上的相似度我们才会允许员工借走
+					gocv.PutText(img,
+						fmt.Sprintf("nums: %s", objs[maxindex].nums),
+						image.Pt(int(faceInfo.FaceRect[idx].Right+2), int(faceInfo.FaceRect[idx].Top+40)),
+						gocv.FontHersheyPlain,
+						1,
+						color.RGBA{R: 255},
+						1)
+					gocv.PutText(img,
+						fmt.Sprintf("simiar: %f", max),
+						image.Pt(int(faceInfo.FaceRect[idx].Right+2), int(faceInfo.FaceRect[idx].Top+55)),
+						gocv.FontHersheyPlain,
+						1,
+						color.RGBA{R: 255},
+						1)
+					//判断如果感应到了rfid
+					if preResult == true{
+						refresh()//更新数据
+						test(loop)
+						//if写入感应到rfid
+						//卡住在窗口内
+						//想办法卡在当前帧
+						return true
+					}else{
+						//上一次检测是假体或置信度低于0.8，重新判断一次，同时gocv的puttext由于某种未知原因渲染的是上次结果，这也也可以保证渲染信息准确。
+						preResult = true
+					}
+				}else{
+					preResult = false
+				}
+			}
+		}
+	}
+	return false
+}
