@@ -1,5 +1,5 @@
 
-package main
+package temp
 
 import (
 	"bytes"
@@ -90,13 +90,13 @@ func init() {
 		panic(err)
 	}
 	//2. 设置变量以及登录后台获取数据库信息
-	baseurl = "http://arcsoft.dadiqq.cn/face/"//初始化获取图片的地址
-	dataurl = "http://192.168.1.101:8080/"//初始化数据接口
+	baseurl = "http://arcsoft.dadiqq.cn/face/" //初始化获取图片的地址
+	dataurl = "http://192.168.1.101:8080/"     //初始化数据接口
 	localPath = "C:\\faces\\"
 	val := url.Values{}
 	val.Set("username","admin")
 	val.Set("password","admin")
-	resp,err := http.PostForm(fmt.Sprintf("%swork/login",dataurl),val)
+	resp,err := http.PostForm(fmt.Sprintf("%swork/login", dataurl),val)
 	if err != nil{
 		log.Fatal("error in login")
 	}
@@ -113,11 +113,11 @@ func GetFiles(){
 	//1.数据库拉取员工
 	var err error
 	client := &http.Client{}
-	request,err := http.NewRequest("GET",fmt.Sprintf("%swork/workers",dataurl),nil)
+	request,err := http.NewRequest("GET",fmt.Sprintf("%swork/workers", dataurl),nil)
 	if err != nil{
 		log.Fatal(err)
 	}
-	request.Header.Add("Authorization",token)//携带token访问
+	request.Header.Add("Authorization", token) //携带token访问
 	temp,_ := client.Do(request)
 	response,err := ioutil.ReadAll(temp.Body)
 	if err != nil{
@@ -200,7 +200,7 @@ func loop(){
 		g.Label("员工姓名:" + objs[maxindex].name),
 		g.Line(
 			g.Label("员工证件照:"),
-			g.ImageWithUrl(baseurl + "002.png"),
+			g.ImageWithUrl(baseurl+ "002.png"),
 		),
 		g.Label("员工信誉分:" + strconv.FormatInt(objs[maxindex].score,10)),
 		//按钮组
@@ -214,7 +214,7 @@ func refresh(){
 	g.Update()//更新界面
 }
 func test(callback func()){
-	wnd := g.NewMasterWindow("hello world",400,300,g.MasterWindowFlagsNotResizable,initFont)
+	wnd := g.NewMasterWindow("hello world",400,300,g.MasterWindowFlagsNotResizable, initFont)
 	wnd.Run(callback)
 }
 func main() {
@@ -230,7 +230,7 @@ func main() {
 		panic(err)
 	}
 	GetFiles()
-	media, err = gocv.VideoCaptureDevice(0)//根据id打开摄像头（我没有内置摄像头，所以是USB，惨惨兮兮）
+	media, err = gocv.VideoCaptureDevice(0) //根据id打开摄像头（我没有内置摄像头，所以是USB，惨惨兮兮）
 	if err != nil {
 		panic(err)
 	}
@@ -248,7 +248,7 @@ func main() {
 		if img.Empty() {
 			continue
 		}
-		detectFace(engine, &img)//人脸识别
+		detectFace(engine, &img) //人脸识别
 		window.IMShow(img)
 		window.WaitKey(30)
 		// 图片处理完毕记得关闭以释放内存
@@ -293,7 +293,7 @@ func detectFace(engine *FaceEngine, img *gocv.Mat) bool{
 		}
 		var max float32 = 0.0
 		i := 0
-		for _,v := range objs{
+		for _,v := range objs {
 			level,err := engine.FaceFeatureCompare(temp1,v.result)
 			if err != nil{
 				fmt.Print(2)
@@ -377,7 +377,7 @@ func detectFace(engine *FaceEngine, img *gocv.Mat) bool{
 						1)
 					if preResult == true{
 						//判断如果感应到了rfid,读取rfid的租借信息。
-						refresh()//更新数据
+						refresh() //更新数据
 						test(loop)
 						//if写入感应到rfid
 						//卡住在窗口内
