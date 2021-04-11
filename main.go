@@ -1,152 +1,397 @@
-package main
+
+package temp
 
 import (
-	"encoding/hex"
-	"errors"
+	"bytes"
+	"encoding/json"
 	"fmt"
-	serial "github.com/tarm/goserial"
+	g "github.com/AllenDang/giu"
+	"github.com/AllenDang/giu/imgui"
+	"github.com/PonyWilliam/go-arcsoft/handler"
+	. "github.com/windosx/face-engine/v4"
+	"github.com/windosx/face-engine/v4/util"
+	"gocv.io/x/gocv"
+	"image"
+	"image/color"
 	"io"
+	"io/ioutil"
 	"log"
+	"net/http"
+	"net/url"
+	"os"
+	"strconv"
 )
-var s io.ReadWriteCloser
-func GetRes(req []byte)[]byte{
-	//获取有效位函数
-	i:=0
-	for ;i<128;i++{
-		if req[i] == 126 && req[i+1] ==0 {
-			//读到终止符号
-			break
-		}
+
+var (
+	engine *FaceEngine
+	window *gocv.Window
+	media  *gocv.VideoCapture
+	maxindex int
+	preResult bool
+	baseurl string
+	dataurl string
+	localPath string
+	token string
+	title imgui.Font
+)
+type Obj struct{
+	name string
+	nums string
+	id int64
+	score int64
+	Image util.ImageInfo
+	FaceInfos MultiFaceInfo
+	FaceInfo SingleFaceInfo
+	result FaceFeature
+}
+type res struct{
+	Code int `json:"code"`
+	Msg string `json:"msg"`
+	Token string `json:"token"`
+}
+type res2 struct{
+	Code int `json:"code"`
+	Data struct{Workers []Msg `json:"workers"`} `json:"data"`
+}
+type Msg struct {
+	ID int `json:"ID"`
+	Name string `json:"Name"`
+	Nums string `json:"Nums"`
+	Score int `json:"Score"`
+	Telephone string `json:"Telephone"`
+}
+var objs []Obj
+func DownloadImage(nums string)error{
+	//根据nums下载图片接口
+	DownLoadUrl := baseurl + nums + ".png"
+	fmt.Println(DownLoadUrl)
+	resp,err := http.Get(DownLoadUrl)
+	if err!= nil {
+		return err
 	}
-	return req[:i+1]
-}
-func GetReadEpc(req []byte)[]byte{
-	//获取epc区域，做地址偏移，找到对应的数据区域
-	return req[8:20]
-}
-func CheckSum(req []byte)int{
-	//计算sum值
-	sum := 0
-	for i:=1;i<len(req);i++{
-		sum += int(req[i])
+	body,err := ioutil.ReadAll(resp.Body)
+	if err!= nil {
+		return err
 	}
-	return sum % 256
+	out,err := os.Create(localPath + nums + ".png")
+	if err!= nil {
+		return err
+	}
+	_, err = io.Copy(out, bytes.NewBuffer(body))
+	if err!= nil {
+		return err
+	}
+	return nil
 }
-func AddLastByte(req []byte)[]byte{
-	req = append(req,byte(CheckSum(req)),byte(0x7E))
-	return req
-}
-func FatalErr(err error){
+func init() {
+	//1. 激活虹软
+	err := OnlineActivation("8tM7EeBHZhL1De6wgRs8nJEJkoxy96VSKAMypTSeY7By", "F4V8HBCEYwsm4EU3XifvWU6VbGRhDbmkSAuibdmqTSUv", "8691-116F-H133-TE67")
+	if err != nil {
+		panic(err)
+	}
+	//2. 设置变量以及登录后台获取数据库信息
+	baseurl = "http://arcsoft.dadiqq.cn/face/" //初始化获取图片的地址
+	dataurl = "http://192.168.1.101:8080/"     //初始化数据接口
+	localPath = "C:\\faces\\"
+	val := url.Values{}
+	val.Set("username","admin")
+	val.Set("password","admin")
+	resp,err := http.PostForm(fmt.Sprintf("%swork/login", dataurl),val)
+	if err != nil{
+		log.Fatal("error in login")
+	}
+	defer resp.Body.Close()
+	bs,err := ioutil.ReadAll(resp.Body)
 	if err != nil{
 		log.Fatal(err)
 	}
+	data := &res{}
+	_ = json.Unmarshal(bs, &data)
+	token = data.Token
 }
-func appendSlice(ele1 []byte,ele2 []byte)[]byte{
-	for i:=0;i<len(ele2);i++{
-		ele1 = append(ele1,ele2[i])
+func GetFiles(){
+	//1.数据库拉取员工
+	var err error
+	client := &http.Client{}
+	request,err := http.NewRequest("GET",fmt.Sprintf("%swork/workers", dataurl),nil)
+	if err != nil{
+		log.Fatal(err)
 	}
-	return ele1
-}
-func GetIoReaderData()(int,[]byte){
-	//只读取一条返回指令哦
-	data := make([]byte,128)
-	for i:=0;i<500;i++{
-		if s == nil{
-			FatalErr(errors.New("无法读取s"))
+	request.Header.Add("Authorization", token) //携带token访问
+	temp,_ := client.Do(request)
+	response,err := ioutil.ReadAll(temp.Body)
+	if err != nil{
+		log.Fatal(err)
+	}
+	fmt.Println(string(response))
+	res2 := &res2{}
+	err = json.Unmarshal(response, &res2)
+
+	if err != nil{
+		log.Fatal(err)
+	}
+	defer temp.Body.Close()
+	//2. 从阿里云oss拉取图片并保存到本地(release环境下理论说只需要启动一次，所以不考虑下载问题)
+	if res2.Data.Workers == nil {
+		panic("没有需要对比的员工")
+	}
+	for _,temp2 := range res2.Data.Workers{
+		if temp2.ID == 1{
+			continue//跳过admin账号
 		}
-		n,err := s.Read(data)
-		FatalErr(err)
-		if n!=0{
-			return n,GetRes(data)//只返回有效区域
+		err = DownloadImage(temp2.Nums)
+		if err!= nil{
+			panic(err)
 		}
 	}
-	return 0,nil
-}
-func Success(data []byte)bool{
-	temp := []byte{0xBB,0x01,0x0C,0x00,0x01,0x00,0x0E,0x7E}
-	for k,_ := range temp{
-		if temp[k] != data[k]{
-			return false
-		}
+	//3. 读取所有图片
+	file_engine,err := NewFaceEngine(DetectModeImage,OrientPriority0,1,EnableFaceDetect|EnableAge|EnableGender|EnableFaceRecognition)
+	if err != nil{
+		log.Fatal(err)
 	}
-	return true
-}
-func Select(buf []byte)[]byte{
-	//传入要选择的卡片,返回响应结果
-	command := []byte{0xBB,0x00,0x0C,0x00,0x13,0x01,0x00,0x00,0x00,0x20,0x60,0x00}
-	command = appendSlice(command,GetReadEpc(buf))
-	command = AddLastByte(command)
-	_,err := s.Write(command)
-	FatalErr(err)
-	_, temp := GetIoReaderData()
-	return temp
-}
-func Write()[]byte{
-	//封装的Write函数
-	/*
-		BB 00 49 00 11 00 00 00 00 03 00 00 00 04 01 02 03 04 05 06 07 08 85 7E
-	*/
-	command := []byte{0xBB,0x00,0x49,0x00,0x11,0x00,0x00,0x00,0x00,0x01,
-		0x00,0x00,0x00,0x04,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08}
-	command = AddLastByte(command)
-	fmt.Println(hex.EncodeToString(command))
-	_,err := s.Write(command)
-	FatalErr(err)
-	_, temp := GetIoReaderData()
-	return temp
-}
-func WriteErr(req []byte)error{
-	if req[0] == 0xbb && req[1] == 0x01 && req[2] == 0x49{
-		return nil
+	format := ".png"
+	for _,v := range res2.Data.Workers{
+		if v.ID == 1{
+			continue//跳过admin账号
+		}
+		obj := Obj{}
+		obj.id = int64(v.ID)
+		obj.name = v.Name
+		obj.nums = v.Nums
+		obj.score = int64(v.Score)
+		obj.Image = util.GetResizedImageInfo(localPath + obj.nums + format)
+		obj.FaceInfos, err = file_engine.DetectFaces(obj.Image.Width, obj.Image.Height, ColorFormatBGR24, obj.Image.DataUInt8)
+		if err != nil{
+			fmt.Print(v)
+			log.Fatal("提取信息失败")
+		}
+		if obj.FaceInfos.FaceDataInfoList == nil{
+			fmt.Print(v)
+			log.Fatal("提取信息失败")
+		}
+		obj.FaceInfo.DataInfo = obj.FaceInfos.FaceDataInfoList[0]
+		obj.FaceInfo.FaceOrient = obj.FaceInfos.FaceOrient[0]
+		obj.FaceInfo.FaceOrient = obj.FaceInfos.FaceOrient[0]
+		obj.result,err = file_engine.FaceFeatureExtract(obj.Image.Width,obj.Image.Height,ColorFormatBGR24,obj.Image.DataUInt8,obj.FaceInfo,0,0)
+		objs = append(objs,obj)
 	}
-	if req[0] == 0xbb && req[1] == 0x01 && req[2] == 0xff{
-		if req[5] == 0x10{
-			return errors.New("没有找到指定卡号")
-		}
-		if req[5] == 0x10{
-			return errors.New("访问密码错误")
-		}
-		if req[5] == 0xb3{
-			return errors.New("超出读写范围")
-		}
-		return errors.New("未定义的错误")
-	}
-	return errors.New("格式不正确，请检查传入的数据是否为写入响应结果")
+}
+// 激活SDK
+func initFont() {
+	fonts := g.Context.IO().Fonts()
+
+	ranges := imgui.NewGlyphRanges()
+
+	builder := imgui.NewFontGlyphRangesBuilder()
+	builder.AddRanges(fonts.GlyphRangesChineseFull())
+	builder.BuildRanges(ranges)
+
+	fontPath := "c:/Alibaba-PuHuiTi-Light.ttf"
+	fonts.AddFontFromFileTTFV(fontPath, 16, imgui.DefaultFontConfig, ranges.Data())
+	title = fonts.AddFontFromFileTTFV(fontPath, 24, imgui.DefaultFontConfig, ranges.Data())
+}
+
+func loop(){
+	g.SingleWindow("确认信息").Layout(
+		g.Label("信息确认").Font(&title),
+		//基本信息组
+		g.Label("员工id:" + strconv.FormatInt(objs[maxindex].id,10)),
+		g.Label("员工编号:" + objs[maxindex].nums),
+		g.Label("员工姓名:" + objs[maxindex].name),
+		g.Line(
+			g.Label("员工证件照:"),
+			g.ImageWithUrl(baseurl+ "002.png"),
+		),
+		g.Label("员工信誉分:" + strconv.FormatInt(objs[maxindex].score,10)),
+		//按钮组
+		g.Line(
+			g.Button("确认").OnClick(handler.Confirm),
+		),
+	)
+
+}
+func refresh(){
+	g.Update()//更新界面
+}
+func test(callback func()){
+	wnd := g.NewMasterWindow("hello world",400,300,g.MasterWindowFlagsNotResizable, initFont)
+	wnd.Run(callback)
 }
 func main() {
+	preResult = false
+	//创建图形化界面
 	var err error
-	cfg := &serial.Config{Name: "COM6", Baud: 115200, ReadTimeout: 50 /*毫秒*/}
-	s,err = serial.OpenPort(cfg)
-	FatalErr(err)
-	command := []byte{0xBB,0x00,0x22,0x00,0x00}
-	command = AddLastByte(command)
-	n,err := s.Write(command)
-	FatalErr(err)
-	buf := make([]byte,128)
-	for i:=0;i<500;i++{
-		n,err = s.Read(buf)
-		FatalErr(err)
-		if n > 0{
-			//获取数据
-			if n == 8{
-				fmt.Println("读取完毕")
-				return
+	// 初始化人脸引擎
+	engine, err = NewFaceEngine(DetectModeVideo,
+		OrientPriority0,
+		1,
+		EnableFaceDetect|EnableAge|EnableGender|EnableFaceRecognition|EnableLiveness)
+	if err != nil {
+		panic(err)
+	}
+	GetFiles()
+	media, err = gocv.VideoCaptureDevice(0) //根据id打开摄像头（我没有内置摄像头，所以是USB，惨惨兮兮）
+	if err != nil {
+		panic(err)
+	}
+	// 整个窗口方便看效果
+	window = gocv.NewWindow("face detect")
+	// 获取视频宽度
+	w := media.Get(gocv.VideoCaptureFrameWidth)
+	// 获取视频高度
+	h := media.Get(gocv.VideoCaptureFrameHeight)
+	// 调整窗口大小
+	window.ResizeWindow(int(w), int(h))
+	for{
+		img := gocv.NewMat()
+		media.Read(&img)
+		if img.Empty() {
+			continue
+		}
+		detectFace(engine, &img) //人脸识别
+		window.IMShow(img)
+		window.WaitKey(30)
+		// 图片处理完毕记得关闭以释放内存
+		img.Close()
+	}
+	// 收尾工作
+	media.Close()
+	engine.Destroy()
+	window.Close()
+}
+
+// 虹软开始干活
+func detectFace(engine *FaceEngine, img *gocv.Mat) bool{
+	dataPtr, err := img.DataPtrUint8()//转换为ImageData所需类型
+	if err != nil {
+		fmt.Printf("%v\n", err)
+		return false
+	}
+	imageData := ImageData{
+		PixelArrayFormat: ColorFormatBGR24,
+		Width:            img.Cols(),
+		Height:           img.Rows(),
+	}
+	imageData.WidthStep[0] = img.Step()
+	imageData.ImageData[0] = dataPtr
+	faceInfo, err := engine.DetectFacesEx(imageData)//预处理
+	if err != nil {
+		fmt.Printf("%v\n", err)
+		return false
+	}
+	if faceInfo.FaceNum > 0 {
+		temp := SingleFaceInfo{
+			FaceOrient: faceInfo.FaceOrient[0],
+			FaceRect: faceInfo.FaceRect[0],
+			DataInfo: faceInfo.FaceDataInfoList[0],
+		}
+		//对比一下
+		temp1,err := engine.FaceFeatureExtractEx(imageData,temp,0,0)
+		if err != nil{
+			fmt.Print(1)
+			log.Fatal(err)
+		}
+		var max float32 = 0.0
+		i := 0
+		for _,v := range objs {
+			level,err := engine.FaceFeatureCompare(temp1,v.result)
+			if err != nil{
+				fmt.Print(2)
+				log.Fatal(err)
 			}
-			strTemp := hex.EncodeToString(GetReadEpc(buf))
-			fmt.Println(strTemp)
-			//command := []byte{0xBB,0x00,0x0C,0x00,0x07,0x23,0x00,0x00,0x00,0x00,0x60,0x00}
-			temp := Select(buf)//封装的选择函数
-			if Success(temp){
-				res := Write()//封装的Write，先select再write
-				fmt.Println(hex.EncodeToString(res))
-				if err :=WriteErr(res);err!=nil {
-					log.Fatal(err)
-				}else{
-					fmt.Println("写入成功")
+			if level > max {
+				max = level
+				maxindex = i
+			}
+			i++
+		}
+		err = engine.ProcessEx(imageData, faceInfo, EnableAge|EnableGender|EnableLiveness)
+		for idx := 0; idx < int(faceInfo.FaceNum); idx++ {
+			rect := image.Rect(int(faceInfo.FaceRect[idx].Left),
+				int(faceInfo.FaceRect[idx].Top),
+				int(faceInfo.FaceRect[idx].Right),
+				int(faceInfo.FaceRect[idx].Bottom))
+			// 把人脸框起来
+			gocv.Rectangle(img, rect, color.RGBA{G: 255}, 2)
+			if err == nil {
+				age, _ := engine.GetAge()
+				gender, _ := engine.GetGender()
+				live,_ := engine.GetLivenessScore()
+				var ageResult string
+				var genderResult string
+				if live.IsLive[idx] != 1 {
+					//假体
+					preResult = false
+					showText := "prosthesis"
+					gocv.PutText(img,fmt.Sprintf("%s",showText),
+						image.Pt(int(faceInfo.FaceRect[idx].Right+2), int(faceInfo.FaceRect[idx].Top+10)),
+						gocv.FontHersheyPlain,
+						1,
+						color.RGBA{R: 255},
+						1,
+					)
+					return false
 				}
-			}else{
-				log.Fatal("好像出错了。。。")
+				if age.AgeArray[idx] <= 0 {
+					ageResult = "N/A"
+				} else {
+					ageResult = strconv.Itoa(int(age.AgeArray[idx]))
+				}
+				if gender.GenderArray[idx] < 0 {
+					genderResult = "N/A"
+				} else if gender.GenderArray[idx] == 0 {
+					genderResult = "Male"
+				} else {
+					genderResult = "Female"
+				}
+
+				gocv.PutText(img,
+					fmt.Sprintf("Age: %s", ageResult),
+					image.Pt(int(faceInfo.FaceRect[idx].Right+2), int(faceInfo.FaceRect[idx].Top+10)),
+					gocv.FontHersheyPlain,
+					1,
+					color.RGBA{R: 255},
+					1)
+				gocv.PutText(img,
+					fmt.Sprintf("Gender: %s", genderResult),
+					image.Pt(int(faceInfo.FaceRect[idx].Right+2), int(faceInfo.FaceRect[idx].Top+25)),
+					gocv.FontHersheyPlain,
+					1,
+					color.RGBA{R: 255},
+					1)
+				if max > 0.8{
+					//也只有到0.8以上的相似度我们才会允许员工借走
+					gocv.PutText(img,
+						fmt.Sprintf("nums: %s", objs[maxindex].nums),
+						image.Pt(int(faceInfo.FaceRect[idx].Right+2), int(faceInfo.FaceRect[idx].Top+40)),
+						gocv.FontHersheyPlain,
+						1,
+						color.RGBA{R: 255},
+						1)
+					gocv.PutText(img,
+						fmt.Sprintf("simiar: %f", max),
+						image.Pt(int(faceInfo.FaceRect[idx].Right+2), int(faceInfo.FaceRect[idx].Top+55)),
+						gocv.FontHersheyPlain,
+						1,
+						color.RGBA{R: 255},
+						1)
+					if preResult == true{
+						//判断如果感应到了rfid,读取rfid的租借信息。
+						refresh() //更新数据
+						test(loop)
+						//if写入感应到rfid
+						//卡住在窗口内
+						//想办法卡在当前帧
+						return true
+					}else{
+						//上一次检测是假体或置信度低于0.8，重新判断一次，同时gocv的puttext由于某种未知原因渲染的是上次结果，这也也可以保证渲染信息准确。
+						preResult = true
+					}
+				}else{
+					preResult = false
+				}
 			}
 		}
 	}
+	return false
 }
