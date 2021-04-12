@@ -160,14 +160,24 @@ func Command(command []byte)[]byte{
 	_,temp := GetIoReaderData()
 	return temp
 }
+func Empty(data []byte)bool{
+	for _,v := range data{
+		if v!= 0{
+			return false
+		}
+	}
+	return  true
+}
 func GetNearRfid()[][]byte{
 	cardNum = nil
 	StartReadAll()
-	for i := 0;i<100;i++{
+	for i := 0;i<200;i++{
 		buf := make([]byte,128)
 		n, _ := s.Read(buf)
 		if n >0 {
-			AddToArray(GetReadEpc(buf))
+			if !Empty(GetReadEpc(buf)) {
+				AddToArray(GetReadEpc(buf))
+			}
 		}
 	}
 	StopReadAll()//关闭执行

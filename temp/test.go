@@ -1,12 +1,13 @@
-
-package temp
+package main
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	g "github.com/AllenDang/giu"
 	"github.com/AllenDang/giu/imgui"
+	"github.com/PonyWilliam/go-arcsoft/RfidUtils"
 	"github.com/PonyWilliam/go-arcsoft/handler"
 	. "github.com/windosx/face-engine/v4"
 	"github.com/windosx/face-engine/v4/util"
@@ -20,19 +21,6 @@ import (
 	"net/url"
 	"os"
 	"strconv"
-)
-
-var (
-	engine *FaceEngine
-	window *gocv.Window
-	media  *gocv.VideoCapture
-	maxindex int
-	preResult bool
-	baseurl string
-	dataurl string
-	localPath string
-	token string
-	title imgui.Font
 )
 type Obj struct{
 	name string
@@ -60,7 +48,20 @@ type Msg struct {
 	Score int `json:"Score"`
 	Telephone string `json:"Telephone"`
 }
-var objs []Obj
+var (
+	engine *FaceEngine
+	window *gocv.Window
+	media  *gocv.VideoCapture
+	maxindex int
+	preResult bool
+	baseurl string
+	dataurl string
+	localPath string
+	token string
+	title imgui.Font
+	objs []Obj
+	Rfid [][]byte
+)
 func DownloadImage(nums string)error{
 	//根据nums下载图片接口
 	DownLoadUrl := baseurl + nums + ".png"
@@ -91,7 +92,7 @@ func init() {
 	}
 	//2. 设置变量以及登录后台获取数据库信息
 	baseurl = "http://arcsoft.dadiqq.cn/face/" //初始化获取图片的地址
-	dataurl = "http://192.168.1.101:8080/"     //初始化数据接口
+	dataurl = "http://192.168.1.103:8080/"     //初始化数据接口
 	localPath = "C:\\faces\\"
 	val := url.Values{}
 	val.Set("username","admin")
@@ -107,6 +108,7 @@ func init() {
 	}
 	data := &res{}
 	_ = json.Unmarshal(bs, &data)
+	fmt.Println(data)
 	token = data.Token
 }
 func GetFiles(){
@@ -192,6 +194,12 @@ func initFont() {
 }
 
 func loop(){
+	var str []interface{}
+
+	for _,v := range Rfid{
+		str = append(str,hex.EncodeToString(v))
+	}
+
 	g.SingleWindow("确认信息").Layout(
 		g.Label("信息确认").Font(&title),
 		//基本信息组
@@ -206,11 +214,16 @@ func loop(){
 		//按钮组
 		g.Line(
 			g.Button("确认").OnClick(handler.Confirm),
-			),
-		)
+		),
+		g.Label("rfid标签").Font(&title),
+		g.RangeBuilder("Labels",str, func(i int, v interface{}) g.Widget {
+			return g.Label(v.(string))
+		}),
+	)
 
 }
 func refresh(){
+	//传入一个rfid
 	g.Update()//更新界面
 }
 func test(callback func()){
@@ -324,12 +337,12 @@ func detectFace(engine *FaceEngine, img *gocv.Mat) bool{
 					preResult = false
 					showText := "prosthesis"
 					gocv.PutText(img,fmt.Sprintf("%s",showText),
-							image.Pt(int(faceInfo.FaceRect[idx].Right+2), int(faceInfo.FaceRect[idx].Top+10)),
-								gocv.FontHersheyPlain,
-								1,
-								color.RGBA{R: 255},
-								1,
-						)
+						image.Pt(int(faceInfo.FaceRect[idx].Right+2), int(faceInfo.FaceRect[idx].Top+10)),
+						gocv.FontHersheyPlain,
+						1,
+						color.RGBA{R: 255},
+						1,
+					)
 					return false
 				}
 				if age.AgeArray[idx] <= 0 {
@@ -377,11 +390,10 @@ func detectFace(engine *FaceEngine, img *gocv.Mat) bool{
 						1)
 					if preResult == true{
 						//判断如果感应到了rfid,读取rfid的租借信息。
-						refresh() //更新数据
-						test(loop)
-						//if写入感应到rfid
-						//卡住在窗口内
-						//想办法卡在当前帧
+						if Rfid = RfidUtils.GetNearRfid();Rfid != nil {
+							refresh() //更新数据
+							test(loop)
+						}
 						return true
 					}else{
 						//上一次检测是假体或置信度低于0.8，重新判断一次，同时gocv的puttext由于某种未知原因渲染的是上次结果，这也也可以保证渲染信息准确。

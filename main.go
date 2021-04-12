@@ -1,12 +1,13 @@
-
-package temp
+package main
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	g "github.com/AllenDang/giu"
 	"github.com/AllenDang/giu/imgui"
+	"github.com/PonyWilliam/go-arcsoft/RfidUtils"
 	"github.com/PonyWilliam/go-arcsoft/handler"
 	. "github.com/windosx/face-engine/v4"
 	"github.com/windosx/face-engine/v4/util"
@@ -20,19 +21,6 @@ import (
 	"net/url"
 	"os"
 	"strconv"
-)
-
-var (
-	engine *FaceEngine
-	window *gocv.Window
-	media  *gocv.VideoCapture
-	maxindex int
-	preResult bool
-	baseurl string
-	dataurl string
-	localPath string
-	token string
-	title imgui.Font
 )
 type Obj struct{
 	name string
@@ -60,7 +48,21 @@ type Msg struct {
 	Score int `json:"Score"`
 	Telephone string `json:"Telephone"`
 }
-var objs []Obj
+var (
+	engine *FaceEngine
+	window *gocv.Window
+	media  *gocv.VideoCapture
+	maxindex int
+	preResult bool
+	baseurl string
+	dataurl string
+	localPath string
+	token string
+	title imgui.Font
+	objs []Obj
+	Rfid [][]byte
+	count int
+)
 func DownloadImage(nums string)error{
 	//根据nums下载图片接口
 	DownLoadUrl := baseurl + nums + ".png"
@@ -107,6 +109,7 @@ func init() {
 	}
 	data := &res{}
 	_ = json.Unmarshal(bs, &data)
+	fmt.Println(data)
 	token = data.Token
 }
 func GetFiles(){
@@ -162,12 +165,10 @@ func GetFiles(){
 		obj.Image = util.GetResizedImageInfo(localPath + obj.nums + format)
 		obj.FaceInfos, err = file_engine.DetectFaces(obj.Image.Width, obj.Image.Height, ColorFormatBGR24, obj.Image.DataUInt8)
 		if err != nil{
-			fmt.Print(v)
-			log.Fatal("提取信息失败")
+			log.Fatal("提取信息失败1",err)
 		}
 		if obj.FaceInfos.FaceDataInfoList == nil{
-			fmt.Print(v)
-			log.Fatal("提取信息失败")
+			log.Fatal("提取信息失败2",err)
 		}
 		obj.FaceInfo.DataInfo = obj.FaceInfos.FaceDataInfoList[0]
 		obj.FaceInfo.FaceOrient = obj.FaceInfos.FaceOrient[0]
@@ -192,6 +193,12 @@ func initFont() {
 }
 
 func loop(){
+	var str []interface{}
+
+	for _,v := range Rfid{
+		str = append(str,hex.EncodeToString(v))
+	}
+
 	g.SingleWindow("确认信息").Layout(
 		g.Label("信息确认").Font(&title),
 		//基本信息组
@@ -200,17 +207,22 @@ func loop(){
 		g.Label("员工姓名:" + objs[maxindex].name),
 		g.Line(
 			g.Label("员工证件照:"),
-			g.ImageWithUrl(baseurl+ "002.png"),
+			g.ImageWithUrl(baseurl+ fmt.Sprintf("%s.png",objs[maxindex].nums)),
 		),
 		g.Label("员工信誉分:" + strconv.FormatInt(objs[maxindex].score,10)),
 		//按钮组
 		g.Line(
 			g.Button("确认").OnClick(handler.Confirm),
 		),
+		g.Label("rfid标签").Font(&title),
+		g.RangeBuilder("Labels",str, func(i int, v interface{}) g.Widget {
+			return g.Label(v.(string))
+		}),
 	)
 
 }
 func refresh(){
+	//传入一个rfid
 	g.Update()//更新界面
 }
 func test(callback func()){
@@ -377,11 +389,18 @@ func detectFace(engine *FaceEngine, img *gocv.Mat) bool{
 						1)
 					if preResult == true{
 						//判断如果感应到了rfid,读取rfid的租借信息。
-						refresh() //更新数据
-						test(loop)
-						//if写入感应到rfid
-						//卡住在窗口内
-						//想办法卡在当前帧
+						count++
+						if count < 45{
+							//性能优化，过多扫描rfid会对设备造成负担
+							return true
+						}
+						count = 0
+						if Rfid = RfidUtils.GetNearRfid();Rfid != nil {
+							refresh() //更新数据
+							test(loop)
+						}else{
+							//提供开门操作，是员工
+						}
 						return true
 					}else{
 						//上一次检测是假体或置信度低于0.8，重新判断一次，同时gocv的puttext由于某种未知原因渲染的是上次结果，这也也可以保证渲染信息准确。
