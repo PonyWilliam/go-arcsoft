@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	g "github.com/AllenDang/giu"
 	"github.com/AllenDang/giu/imgui"
 	"github.com/PonyWilliam/go-arcsoft/RfidUtils"
-	"github.com/PonyWilliam/go-arcsoft/handler"
 	. "github.com/windosx/face-engine/v4"
 	"github.com/windosx/face-engine/v4/util"
 	"gocv.io/x/gocv"
@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"time"
 )
 type Obj struct{
 	name string
@@ -40,6 +41,17 @@ type res struct{
 type res2 struct{
 	Code int `json:"code"`
 	Data struct{Workers []Msg `json:"workers"`} `json:"data"`
+}
+type res3 struct{
+	ID int64 `json:"id"`
+	Name string `json:"product_name"`
+}
+type allRes struct{
+	Code int `json:"code"`
+	Msg string `json:"msg"`
+}
+type Devices struct{
+	device []res3
 }
 type Msg struct {
 	ID int `json:"ID"`
@@ -62,10 +74,17 @@ var (
 	objs []Obj
 	Rfid [][]byte
 	count int
+	str []interface{}
+	devices Devices
+	ok bool
+	now string
+	AllRes allRes
+	wnd *g.MasterWindow
+	showWindow bool
 )
 func DownloadImage(nums string)error{
 	//根据nums下载图片接口
-	DownLoadUrl := baseurl + nums + ".png"
+	DownLoadUrl := baseurl + nums + ".png?time=" + strconv.FormatInt(time.Now().Unix(),10)
 	fmt.Println(DownLoadUrl)
 	resp,err := http.Get(DownLoadUrl)
 	if err!= nil {
@@ -85,16 +104,8 @@ func DownloadImage(nums string)error{
 	}
 	return nil
 }
-func init() {
-	//1. 激活虹软
-	err := OnlineActivation("8tM7EeBHZhL1De6wgRs8nJEJkoxy96VSKAMypTSeY7By", "F4V8HBCEYwsm4EU3XifvWU6VbGRhDbmkSAuibdmqTSUv", "8691-116F-H133-TE67")
-	if err != nil {
-		panic(err)
-	}
-	//2. 设置变量以及登录后台获取数据库信息
-	baseurl = "http://arcsoft.dadiqq.cn/face/" //初始化获取图片的地址
-	dataurl = "http://192.168.1.101:8080/"     //初始化数据接口
-	localPath = "C:\\faces\\"
+func getToken(){
+	fmt.Println(123)
 	val := url.Values{}
 	val.Set("username","admin")
 	val.Set("password","admin")
@@ -111,6 +122,41 @@ func init() {
 	_ = json.Unmarshal(bs, &data)
 	fmt.Println(data)
 	token = data.Token
+}
+func postBorrow(pid int64)(string,error){
+	new_pid := strconv.FormatInt(pid,10)
+	val := url.Values{}
+	val.Set("wid","admin")
+	val.Set("password","admin")
+	resp,err := http.PostForm(fmt.Sprintf("%swork/borrow/%s",dataurl, new_pid),val)
+	if err != nil{
+		return "", err
+	}
+	defer resp.Body.Close()
+	bs,err := ioutil.ReadAll(resp.Body)
+	if err != nil{
+		return "", err
+	}
+	data := &allRes{}
+	_ = json.Unmarshal(bs, &data)
+	if data == nil || data.Code!=200 {
+		return data.Msg,errors.New("返回出错")
+	}
+	return data.Msg,nil
+}
+func init() {
+	//1. 激活虹软
+	err := OnlineActivation("8tM7EeBHZhL1De6wgRs8nJEJkoxy96VSKAMypTSeY7By", "F4V8HBCEYwsm4EU3XifvWU6VbGRhDbmkSAuibdmqTSUv", "8691-116F-H133-TE67")
+	fmt.Println(123)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(123)
+	//2. 设置变量以及登录后台获取数据库信息
+	baseurl = "http://arcsoft.dadiqq.cn/face/" //初始化获取图片的地址
+	dataurl = "http://192.168.97.209:8080/"     //初始化数据接口
+	localPath = "C:\\faces\\"
+	getToken()
 }
 func GetFiles(){
 	//1.数据库拉取员工
@@ -193,41 +239,76 @@ func initFont() {
 }
 
 func loop(){
-	var str []interface{}
-
-	for _,v := range Rfid{
-		str = append(str,hex.EncodeToString(v))
+	if ok {
+		now = strconv.FormatInt(time.Now().Unix(),10)//
 	}
+	ok = false
+		g.SingleWindow("确认信息").IsOpen(&showWindow).Flags(g.WindowFlagsNone).Layout(
+			g.Label("信息确认").Font(&title),
+			//基本信息组
+			g.Label("员工id:" + strconv.FormatInt(objs[maxindex].id,10)),
+			g.Label("员工编号:" + objs[maxindex].nums),
+			g.Label("员工姓名:" + objs[maxindex].name),
+			g.Line(
+				g.Label("员工证件照:"),
+				g.ImageWithUrl(baseurl+ fmt.Sprintf("%s.png?time=%s",objs[maxindex].nums,now)),
+			),
+			g.Label("员工信誉分:" + strconv.FormatInt(objs[maxindex].score,10)),
+			//按钮组
+			g.Label("rfid标签").Font(&title),
+			g.RangeBuilder("Labels",str, func(i int, v interface{}) g.Widget {
+				return g.Label(v.(string))
+			}),
+			g.Line(
+				g.Button("确认借出").Size(100,50).OnClick(Confirm),
+			),
 
-	g.SingleWindow("确认信息").Layout(
-		g.Label("信息确认").Font(&title),
-		//基本信息组
-		g.Label("员工id:" + strconv.FormatInt(objs[maxindex].id,10)),
-		g.Label("员工编号:" + objs[maxindex].nums),
-		g.Label("员工姓名:" + objs[maxindex].name),
-		g.Line(
-			g.Label("员工证件照:"),
-			g.ImageWithUrl(baseurl+ fmt.Sprintf("%s.png",objs[maxindex].nums)),
-		),
-		g.Label("员工信誉分:" + strconv.FormatInt(objs[maxindex].score,10)),
-		//按钮组
-		g.Line(
-			g.Button("确认").OnClick(handler.Confirm),
-		),
-		g.Label("rfid标签").Font(&title),
-		g.RangeBuilder("Labels",str, func(i int, v interface{}) g.Widget {
-			return g.Label(v.(string))
-		}),
+		)
+}
+func Confirm(){
+	g.SingleWindow("message box").Layout(
+		g.PrepareMsgbox(),
 	)
-
+	var err error
+	client := &http.Client{}
+	request,err := http.NewRequest("GET",fmt.Sprintf("%swork/workers", dataurl),nil)
+	if err != nil{
+		log.Fatal(err)
+	}
+	request.Header.Add("Authorization", token) //携带token访问
+	temp,_ := client.Do(request)
+	response,err := ioutil.ReadAll(temp.Body)
+	if err != nil{
+		log.Fatal(err)
+	}
+	err = json.Unmarshal(response, &AllRes)
+	if err != nil{
+		log.Println(err)
+		g.Msgbox("error","reason:" + err.Error())
+		return
+	}
+	if AllRes.Code != 200{
+		log.Println(AllRes.Msg)
+		g.Msgbox("error","reason:" + AllRes.Msg)
+		return
+	}
+	fmt.Println(AllRes)
+	//成功，请求出借
+	for _,v := range devices.device{
+		_,err := postBorrow(v.ID)
+		if err != nil{
+			g.Msgbox("error",err.Error())
+		}
+	}
 }
 func refresh(){
 	//传入一个rfid
 	g.Update()//更新界面
 }
 func test(callback func()){
-	wnd := g.NewMasterWindow("hello world",400,300,g.MasterWindowFlagsNotResizable, initFont)
-	wnd.Run(callback)
+	wnd = g.NewMasterWindow("租借信息确认",400,400,g.MasterWindowFlagsNotResizable, initFont)
+	wnd.Run(loop)
+	fmt.Println(123)
 }
 func main() {
 	preResult = false
@@ -390,13 +471,40 @@ func detectFace(engine *FaceEngine, img *gocv.Mat) bool{
 					if preResult == true{
 						//判断如果感应到了rfid,读取rfid的租借信息。
 						count++
-						if count < 45{
+						if count < 10{
 							//性能优化，过多扫描rfid会对设备造成负担
 							return true
 						}
 						count = 0
 						if Rfid = RfidUtils.GetNearRfid();Rfid != nil {
-							refresh() //更新数据
+							//每次扫描到要清空str
+							getToken()//请求一次token
+							str = nil
+							devices.device = nil
+							showWindow = true
+							for _,v := range Rfid{
+								var err error
+								client := &http.Client{}
+								request,err := http.NewRequest("GET",fmt.Sprintf("%sproduct/rfid/%s", dataurl,hex.EncodeToString(v)),nil)
+								if err != nil{
+									log.Fatal(err)
+								}
+								request.Header.Add("Authorization", token) //携带token访问
+								temp,_ := client.Do(request)
+								response,err := ioutil.ReadAll(temp.Body)
+								if err != nil{
+									log.Fatal(err)
+								}
+								fmt.Println(string(response))
+								res3 := &res3{}
+								err = json.Unmarshal(response, &res3)
+								if err != nil{
+									log.Println("读取信息失败")
+								}
+								str = append(str,res3.Name)
+								devices.device = append(devices.device,*res3)
+							}
+							ok = true
 							test(loop)
 						}else{
 							//提供开门操作，是员工
