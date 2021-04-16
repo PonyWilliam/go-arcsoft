@@ -12,7 +12,7 @@ var (
 )
 func init(){
 	var err error
-	cfg := &serial.Config{Name: "COM6", Baud: 115200, ReadTimeout: 50 /*毫秒*/}
+	cfg := &serial.Config{Name: "COM8", Baud: 115200, ReadTimeout: 50 /*毫秒*/}
 	s,err = serial.OpenPort(cfg)
 	FatalErr(err)
 }

@@ -6,9 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	g "github.com/AllenDang/giu"
-	"github.com/AllenDang/giu/imgui"
 	"github.com/PonyWilliam/go-arcsoft/RfidUtils"
+	"github.com/PonyWilliam/go-arcsoft/door"
+	"github.com/PonyWilliam/go-arcsoft/impl"
+	"github.com/gorilla/websocket"
 	. "github.com/windosx/face-engine/v4"
 	"github.com/windosx/face-engine/v4/util"
 	"gocv.io/x/gocv"
@@ -61,6 +62,16 @@ type Msg struct {
 	Telephone string `json:"Telephone"`
 }
 var (
+	upgrader = websocket.Upgrader{
+		// 允许跨域
+		CheckOrigin:func(r *http.Request) bool{
+			return true
+		},
+	}
+	wsConn *websocket.Conn
+	err error
+	conn *impl.Connection
+	data []byte
 	engine *FaceEngine
 	window *gocv.Window
 	media  *gocv.VideoCapture
@@ -70,18 +81,57 @@ var (
 	dataurl string
 	localPath string
 	token string
-	title imgui.Font
 	objs []Obj
 	Rfid [][]byte
 	count int
-	str []interface{}
-	devices Devices
-	ok bool
-	now string
-	AllRes allRes
-	wnd *g.MasterWindow
-	showWindow bool
+	flag bool
 )
+func wsHandler(w http.ResponseWriter , r *http.Request){
+	//	w.Write([]byte("hello"))
+	// 完成ws协议的握手操作
+	if wsConn , err = upgrader.Upgrade(w,r,nil); err != nil{
+		return
+	}
+	if conn , err = impl.InitConnection(wsConn); err != nil{
+		fmt.Println(err.Error())
+	}
+	// 启动线程，不断发消息
+	for{
+		if flag{
+			//获取到信息了
+			wid := strconv.FormatInt(objs[maxindex].id,10)
+			_ = conn.WriteMessage([]byte("w" + wid))
+			_ = conn.WriteMessage([]byte("start"))//告诉客户端读取rfid信息
+			for _,v := range Rfid{
+				//把rfid发出去
+				_ = conn.WriteMessage([]byte(hex.EncodeToString(v)))//rfid发送出去
+			}
+			_ = conn.WriteMessage([]byte("end"))//告诉客户端读取完毕，权利归他了！
+			for {
+				//开始循环读取信息
+				if data , err = conn.ReadMessage();err != nil{
+					log.Fatal(err)
+				}
+				if data != nil{
+					fmt.Println(string(data))
+				}
+				if string(data) == "ok" {
+					//o98k
+					flag = false
+					door.Send([]byte("2"))
+					break //对方已处理，放行！
+				}else if string(data) == "cancel"{
+					//取消操作，不放行，break掉就可以
+					flag = false
+					break
+				}
+			}
+		}else{
+			//发0
+			door.Send([]byte("0"))
+		}
+	}
+}
 func DownloadImage(nums string)error{
 	//根据nums下载图片接口
 	DownLoadUrl := baseurl + nums + ".png?time=" + strconv.FormatInt(time.Now().Unix(),10)
@@ -121,6 +171,9 @@ func getToken(){
 	data := &res{}
 	_ = json.Unmarshal(bs, &data)
 	fmt.Println(data)
+	if data.Code != 200{
+		log.Fatal(data.Msg)
+	}
 	token = data.Token
 }
 func postBorrow(pid int64)(string,error){
@@ -147,14 +200,12 @@ func postBorrow(pid int64)(string,error){
 func init() {
 	//1. 激活虹软
 	err := OnlineActivation("8tM7EeBHZhL1De6wgRs8nJEJkoxy96VSKAMypTSeY7By", "F4V8HBCEYwsm4EU3XifvWU6VbGRhDbmkSAuibdmqTSUv", "8691-116F-H133-TE67")
-	fmt.Println(123)
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println(123)
 	//2. 设置变量以及登录后台获取数据库信息
 	baseurl = "http://arcsoft.dadiqq.cn/face/" //初始化获取图片的地址
-	dataurl = "http://192.168.97.209:8080/"     //初始化数据接口
+	dataurl = "http://192.168.130.209:8080/"     //初始化数据接口
 	localPath = "C:\\faces\\"
 	getToken()
 }
@@ -175,10 +226,10 @@ func GetFiles(){
 	fmt.Println(string(response))
 	res2 := &res2{}
 	err = json.Unmarshal(response, &res2)
-
 	if err != nil{
 		log.Fatal(err)
 	}
+	fmt.Println(res2)
 	defer temp.Body.Close()
 	//2. 从阿里云oss拉取图片并保存到本地(release环境下理论说只需要启动一次，所以不考虑下载问题)
 	if res2.Data.Workers == nil {
@@ -188,7 +239,7 @@ func GetFiles(){
 		if temp2.ID == 1{
 			continue//跳过admin账号
 		}
-		err = DownloadImage(temp2.Nums)
+		err = DownloadImage(strconv.FormatInt(int64(temp2.ID),10))
 		if err!= nil{
 			panic(err)
 		}
@@ -208,7 +259,7 @@ func GetFiles(){
 		obj.name = v.Name
 		obj.nums = v.Nums
 		obj.score = int64(v.Score)
-		obj.Image = util.GetResizedImageInfo(localPath + obj.nums + format)
+		obj.Image = util.GetResizedImageInfo(localPath + strconv.FormatInt(obj.id,10) + format)
 		obj.FaceInfos, err = file_engine.DetectFaces(obj.Image.Width, obj.Image.Height, ColorFormatBGR24, obj.Image.DataUInt8)
 		if err != nil{
 			log.Fatal("提取信息失败1",err)
@@ -224,93 +275,13 @@ func GetFiles(){
 	}
 }
 // 激活SDK
-func initFont() {
-	fonts := g.Context.IO().Fonts()
-
-	ranges := imgui.NewGlyphRanges()
-
-	builder := imgui.NewFontGlyphRangesBuilder()
-	builder.AddRanges(fonts.GlyphRangesChineseFull())
-	builder.BuildRanges(ranges)
-
-	fontPath := "c:/Alibaba-PuHuiTi-Light.ttf"
-	fonts.AddFontFromFileTTFV(fontPath, 16, imgui.DefaultFontConfig, ranges.Data())
-	title = fonts.AddFontFromFileTTFV(fontPath, 24, imgui.DefaultFontConfig, ranges.Data())
-}
-
-func loop(){
-	if ok {
-		now = strconv.FormatInt(time.Now().Unix(),10)//
-	}
-	ok = false
-		g.SingleWindow("确认信息").IsOpen(&showWindow).Flags(g.WindowFlagsNone).Layout(
-			g.Label("信息确认").Font(&title),
-			//基本信息组
-			g.Label("员工id:" + strconv.FormatInt(objs[maxindex].id,10)),
-			g.Label("员工编号:" + objs[maxindex].nums),
-			g.Label("员工姓名:" + objs[maxindex].name),
-			g.Line(
-				g.Label("员工证件照:"),
-				g.ImageWithUrl(baseurl+ fmt.Sprintf("%s.png?time=%s",objs[maxindex].nums,now)),
-			),
-			g.Label("员工信誉分:" + strconv.FormatInt(objs[maxindex].score,10)),
-			//按钮组
-			g.Label("rfid标签").Font(&title),
-			g.RangeBuilder("Labels",str, func(i int, v interface{}) g.Widget {
-				return g.Label(v.(string))
-			}),
-			g.Line(
-				g.Button("确认借出").Size(100,50).OnClick(Confirm),
-			),
-
-		)
-}
-func Confirm(){
-	g.SingleWindow("message box").Layout(
-		g.PrepareMsgbox(),
-	)
-	var err error
-	client := &http.Client{}
-	request,err := http.NewRequest("GET",fmt.Sprintf("%swork/workers", dataurl),nil)
-	if err != nil{
-		log.Fatal(err)
-	}
-	request.Header.Add("Authorization", token) //携带token访问
-	temp,_ := client.Do(request)
-	response,err := ioutil.ReadAll(temp.Body)
-	if err != nil{
-		log.Fatal(err)
-	}
-	err = json.Unmarshal(response, &AllRes)
-	if err != nil{
-		log.Println(err)
-		g.Msgbox("error","reason:" + err.Error())
-		return
-	}
-	if AllRes.Code != 200{
-		log.Println(AllRes.Msg)
-		g.Msgbox("error","reason:" + AllRes.Msg)
-		return
-	}
-	fmt.Println(AllRes)
-	//成功，请求出借
-	for _,v := range devices.device{
-		_,err := postBorrow(v.ID)
-		if err != nil{
-			g.Msgbox("error",err.Error())
-		}
-	}
-}
-func refresh(){
-	//传入一个rfid
-	g.Update()//更新界面
-}
-func test(callback func()){
-	wnd = g.NewMasterWindow("租借信息确认",400,400,g.MasterWindowFlagsNotResizable, initFont)
-	wnd.Run(loop)
-	fmt.Println(123)
+func listen(){
+	http.HandleFunc("/ws",wsHandler)
+	_ = http.ListenAndServe("0.0.0.0:7777", nil)
 }
 func main() {
+	flag = false//读取到了标识
+	go listen()
 	preResult = false
 	//创建图形化界面
 	var err error
@@ -336,6 +307,10 @@ func main() {
 	// 调整窗口大小
 	window.ResizeWindow(int(w), int(h))
 	for{
+		if flag == true {
+			time.Sleep(time.Millisecond * 500)
+			continue
+		}
 		img := gocv.NewMat()
 		media.Read(&img)
 		if img.Empty() {
@@ -346,6 +321,7 @@ func main() {
 		window.WaitKey(30)
 		// 图片处理完毕记得关闭以释放内存
 		img.Close()
+
 	}
 	// 收尾工作
 	media.Close()
@@ -357,7 +333,6 @@ func main() {
 func detectFace(engine *FaceEngine, img *gocv.Mat) bool{
 	dataPtr, err := img.DataPtrUint8()//转换为ImageData所需类型
 	if err != nil {
-		fmt.Printf("%v\n", err)
 		return false
 	}
 	imageData := ImageData{
@@ -369,7 +344,6 @@ func detectFace(engine *FaceEngine, img *gocv.Mat) bool{
 	imageData.ImageData[0] = dataPtr
 	faceInfo, err := engine.DetectFacesEx(imageData)//预处理
 	if err != nil {
-		fmt.Printf("%v\n", err)
 		return false
 	}
 	if faceInfo.FaceNum > 0 {
@@ -469,49 +443,27 @@ func detectFace(engine *FaceEngine, img *gocv.Mat) bool{
 						color.RGBA{R: 255},
 						1)
 					if preResult == true{
-						//判断如果感应到了rfid,读取rfid的租借信息。
+						//判断如果感应到了人,读取rfid的租借信息。
 						count++
-						if count < 10{
+						if count < 12{
 							//性能优化，过多扫描rfid会对设备造成负担
 							return true
 						}
-						count = 0
+						//延时50ms
 						if Rfid = RfidUtils.GetNearRfid();Rfid != nil {
-							//每次扫描到要清空str
-							getToken()//请求一次token
-							str = nil
-							devices.device = nil
-							showWindow = true
-							for _,v := range Rfid{
-								var err error
-								client := &http.Client{}
-								request,err := http.NewRequest("GET",fmt.Sprintf("%sproduct/rfid/%s", dataurl,hex.EncodeToString(v)),nil)
-								if err != nil{
-									log.Fatal(err)
-								}
-								request.Header.Add("Authorization", token) //携带token访问
-								temp,_ := client.Do(request)
-								response,err := ioutil.ReadAll(temp.Body)
-								if err != nil{
-									log.Fatal(err)
-								}
-								fmt.Println(string(response))
-								res3 := &res3{}
-								err = json.Unmarshal(response, &res3)
-								if err != nil{
-									log.Println("读取信息失败")
-								}
-								str = append(str,res3.Name)
-								devices.device = append(devices.device,*res3)
-							}
-							ok = true
-							test(loop)
+
+							fmt.Println("flag已经搞定")
+							flag = true//开始检测socket
 						}else{
-							//提供开门操作，是员工
+							//提供开门操作，并count = 0
+							count = 0
 						}
 						return true
 					}else{
 						//上一次检测是假体或置信度低于0.8，重新判断一次，同时gocv的puttext由于某种未知原因渲染的是上次结果，这也也可以保证渲染信息准确。
+						if count>0{
+							count -= 3
+						}
 						preResult = true
 					}
 				}else{
